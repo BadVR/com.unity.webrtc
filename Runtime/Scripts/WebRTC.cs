@@ -1064,7 +1064,6 @@ namespace Unity.WebRTC
                     case GraphicsDeviceType.Vulkan:
                         return GraphicsFormat.B8G8R8A8_SRGB;
                     case GraphicsDeviceType.OpenGLCore:
-                    case GraphicsDeviceType.OpenGLES2:
                     case GraphicsDeviceType.OpenGLES3:
                         return GraphicsFormat.R8G8B8A8_SRGB;
                     case GraphicsDeviceType.Metal:
@@ -1080,7 +1079,6 @@ namespace Unity.WebRTC
                     case GraphicsDeviceType.Vulkan:
                         return GraphicsFormat.B8G8R8A8_UNorm;
                     case GraphicsDeviceType.OpenGLCore:
-                    case GraphicsDeviceType.OpenGLES2:
                     case GraphicsDeviceType.OpenGLES3:
                         return GraphicsFormat.R8G8B8A8_UNorm;
                     case GraphicsDeviceType.Metal:
