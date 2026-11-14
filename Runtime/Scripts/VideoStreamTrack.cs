@@ -487,8 +487,19 @@ namespace Unity.WebRTC
 #if UNITY_ANDROID && !UNITY_EDITOR
             // Only AHB-backed decoders use the Vulkan compute display. Software
             // decoders (including VP8) retain the normal Texture2D upload path.
-            useAhbDisplay = SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.Vulkan &&
-                NativeMethods.GetAhbDisplayMode() >= 2 && NativeMethods.GetRendererFrameIsNative(self) == 1;
+            if (SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.Vulkan)
+            {
+                try
+                {
+                    useAhbDisplay = NativeMethods.GetAhbDisplayMode() >= 2 &&
+                        NativeMethods.GetRendererFrameIsNative(self) == 1;
+                }
+                catch (EntryPointNotFoundException)
+                {
+                    // Older bundled plugins do not expose the experimental AHB API.
+                    useAhbDisplay = false;
+                }
+            }
 #endif
 
             if (Texture != null &&

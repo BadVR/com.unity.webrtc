@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include <atomic>
+#include <algorithm>
 #include <cstdlib>
 #include <limits>
 #include <map>
@@ -114,6 +115,13 @@ namespace webrtc
             char buf[PROP_VALUE_MAX] = { 0 };
             return __system_property_get("debug.ahb.mode", buf) > 0 ? atoi(buf) : 0;
         }
+#if defined(AHB_TEST_HOOKS)
+        bool InjectFailure(int stage)
+        {
+            char buf[PROP_VALUE_MAX] = {};
+            return __system_property_get("debug.ahb.fail", buf) > 0 && atoi(buf) == stage;
+        }
+#endif
 
         class AhbH264Decoder : public ::webrtc::VideoDecoder
         {
@@ -128,23 +136,26 @@ namespace webrtc
                 if (delegateConfigured_ && inner_)
                     inner_->Release();
                 delegateConfigured_ = false;
+                settings_ = settings;
+                conversionFailed_.store(false);
                 mode_ = ReadAhbMode();
                 if (mode_ < 2)
+                    return ConfigureFallback();
+#if defined(AHB_TEST_HOOKS)
+                if (InjectFailure(1))
                 {
-                    bool ok = inner_ && inner_->Configure(settings);
-                    delegateConfigured_ = ok;
-                    if (ok && realCallback_)
-                        inner_->RegisterDecodeCompleteCallback(realCallback_);
-                    AHB_LOG("Configure delegate mode=%d ok=%d", mode_, ok);
-                    return ok;
+                    AHB_LOG("TEST injected AHB initialization failure");
+                    return ConfigureFallback();
                 }
+#endif
                 std::shared_lock<std::shared_mutex> deviceLock(g_deviceMutex);
                 const UnityVulkanInstance* vk = g_deviceOpen ? GetUnityVulkanInstance() : nullptr;
                 AhbVkImporter probe;
                 if (!vk || !probe.Init(vk->device))
                 {
-                    AHB_LOG("Configure rejected: opt-in AHB requires initialized Vulkan + AHB/ycbcr support");
-                    return false;
+                    AHB_LOG("AHB unavailable: falling back to the stock H.264 decoder");
+                    deviceLock.unlock();
+                    return ConfigureFallback();
                 }
                 m_keyFrameRequired = true;
                 AHB_LOG("Configure native opt-in mode=%d id=%llu", mode_, static_cast<unsigned long long>(id_));
@@ -160,10 +171,12 @@ namespace webrtc
                         return WEBRTC_VIDEO_CODEC_NO_OUTPUT;
                     m_keyFrameRequired = false;
                 }
-                if (!NativeDecode(input))
+                if (conversionFailed_.exchange(false) || !NativeDecode(input))
                 {
                     NativeRelease(); // retires the generation, never deletes an in-flight reader
                     m_keyFrameRequired = true;
+                    if (ConfigureFallback())
+                        AHB_LOG("AHB decode failed: switched to the stock decoder and requested a keyframe");
                     return WEBRTC_VIDEO_CODEC_ERROR;
                 }
                 return WEBRTC_VIDEO_CODEC_OK;
@@ -216,6 +229,7 @@ namespace webrtc
                             vk->graphicsQueue, gen.importer.YcbcrSampler()))
                     {
                         RecordReceivePath(ReceivePathCounter::ImportFailures);
+                        conversionFailed_.store(true);
                         gen.DropPending();
                         return;
                     }
@@ -243,8 +257,28 @@ namespace webrtc
             }
 
         private:
+            bool ConfigureFallback()
+            {
+                const bool ok = inner_ && inner_->Configure(settings_);
+                delegateConfigured_ = ok;
+                if (ok)
+                {
+                    mode_ = 0;
+                    if (realCallback_)
+                        inner_->RegisterDecodeCompleteCallback(realCallback_);
+                }
+                AHB_LOG("Configure stock H.264 fallback ok=%d", ok);
+                return ok;
+            }
             bool NativeDecode(const ::webrtc::EncodedImage& input)
             {
+#if defined(AHB_TEST_HOOKS)
+                if (InjectFailure(2))
+                {
+                    AHB_LOG("TEST injected AHB decode failure");
+                    return false;
+                }
+#endif
                 std::shared_lock<std::shared_mutex> deviceLock(g_deviceMutex);
                 const UnityVulkanInstance* vk = g_deviceOpen ? GetUnityVulkanInstance() : nullptr;
                 if (!vk)
@@ -317,12 +351,14 @@ namespace webrtc
                 m_keyFrameRequired = true;
             }
             std::unique_ptr<::webrtc::VideoDecoder> inner_;
+            Settings settings_;
             std::string mime_;
             const uint64_t id_;
             ::webrtc::DecodedImageCallback* realCallback_ = nullptr;
             std::unique_ptr<Generation> generation_;
             bool delegateConfigured_ = false;
             std::atomic<bool> m_keyFrameRequired { true };
+            std::atomic<bool> conversionFailed_ { false };
             int knownWidth_ = 0;
             int knownHeight_ = 0;
             int mode_ = 0;
@@ -339,48 +375,21 @@ namespace webrtc
 
             std::vector<::webrtc::SdpVideoFormat> GetSupportedFormats() const override
             {
-                // Start from what the platform HW decoder factory advertises (H264 Constrained Baseline,
-                // VP9, AV1). We do NOT add VP8: the Quest has no HW VP8 decoder, and routing it through our
-                // AHB MediaCodec produces a broken chroma plane (green). VP8 is left to libwebrtc's internal
-                // libvpx decoder (kInternalImpl) + the standard (non-zero-copy) Texture2D upload — its I420
-                // output can't go through the AHB zero-copy compute display anyway. The per-track display
-                // switch (a Texture2D when the decoder isn't delivering native AHB frames) is what makes that
-                // work. (H265 is also absent: this libwebrtc build has no HEVC codec support at all.)
-                auto formats = android_ ? android_->GetSupportedFormats() : std::vector<::webrtc::SdpVideoFormat>();
-
-                // Add H264 High + Constrained High. The platform Java factory (HardwareVideoDecoderFactory)
-                // only marks H264 High-capable when the decoder NAME starts with "OMX.qcom."/"OMX.Exynos." —
-                // a legacy check that misses the Quest's Codec2 decoder "c2.qti.avc.decoder", so it
-                // advertises Constrained Baseline (42e01f) ONLY. But the Quest's HW AVC decoder DOES decode
-                // High / Constrained High / Main (verified on-device: MediaCodecList reports
-                // c2.qti.avc.decoder hardwareAccelerated, profiles Baseline/CB/Main/High/ConstrainedHigh to
-                // Level 6.2). Without these advertised, a browser HARDWARE H.264 encoder — e.g. Chrome/macOS
-                // VideoToolbox, which emits High/Constrained-High — negotiates to nothing here and shows no
-                // video on Quest. The AHB pipeline is profile-agnostic (it maps "H264" -> "video/avc" and
-                // the MediaCodec reads the real profile from the SPS), and level-asymmetry-allowed=1 keeps
-                // the advertised level (5.2) from capping a sender that runs higher.
-                for (const char* plid : { "640c34" /*Constrained High, 5.2*/, "640034" /*High, 5.2*/ })
-                {
-                    ::webrtc::SdpVideoFormat f(
-                        "H264",
-                        { { "profile-level-id", plid },
-                          { "level-asymmetry-allowed", "1" },
-                          { "packetization-mode", "1" } });
-                    bool present = false;
-                    for (const auto& g : formats)
-                        if (g.IsSameCodec(f)) { present = true; break; }
-                    if (present)
-                        continue;
-                    AHB_LOG("GetSupportedFormats: + H264 %s (Quest HW decodes it; platform factory omitted it)", plid);
-                    formats.push_back(f);
-                }
+                // Do not change normal codec negotiation unless explicitly opted in.
+                // Advertise only formats the stock hardware decoder also supports,
+                // so that every selected format has a real fallback decoder.
+                if (ReadAhbMode() < 2 || !android_)
+                    return {};
+                auto formats = android_->GetSupportedFormats();
+                formats.erase(std::remove_if(formats.begin(), formats.end(),
+                    [](const ::webrtc::SdpVideoFormat& format) { return format.name != "H264"; }), formats.end());
                 return formats;
             }
 
             std::unique_ptr<::webrtc::VideoDecoder>
             CreateVideoDecoder(const ::webrtc::SdpVideoFormat& format) override
             {
-                if (!android_)
+                if (!android_ || ReadAhbMode() < 2 || format.name != "H264")
                     return nullptr;
                 // Drive the zero-copy AHB pipeline (MediaCodec -> AImageReader -> Vulkan compute) for any
                 // codec we can map to a MediaCodec mime. The AHB output path is codec-agnostic, so VP8/VP9/

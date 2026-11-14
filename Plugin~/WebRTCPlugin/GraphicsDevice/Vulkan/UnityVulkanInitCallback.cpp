@@ -7,6 +7,8 @@
 #include "UnityVulkanInitCallback.h"
 #if UNITY_ANDROID
 #include <android/log.h>
+#include <cstdlib>
+#include <sys/system_properties.h>
 #endif
 
 namespace unity
@@ -70,8 +72,11 @@ namespace webrtc
             "VK_KHR_get_memory_requirements2", "VK_KHR_bind_memory2", "VK_EXT_queue_family_foreign",
             "VK_KHR_maintenance1", "VK_KHR_sampler_ycbcr_conversion"
         };
+        char mode[PROP_VALUE_MAX] {};
+        const bool requestedAhb = __system_property_get("debug.ahb.mode", mode) > 0 && std::atoi(mode) >= 2;
         uint32_t extensionCount = 0;
-        bool supported = vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extensionCount, nullptr) == VK_SUCCESS;
+        bool supported = requestedAhb &&
+            vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extensionCount, nullptr) == VK_SUCCESS;
         std::vector<VkExtensionProperties> available(extensionCount);
         if (supported)
             supported = vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extensionCount, available.data()) == VK_SUCCESS;
@@ -133,6 +138,21 @@ namespace webrtc
         newCreateInfo.ppEnabledExtensionNames = newExtensions.data();
         newCreateInfo.enabledExtensionCount = static_cast<uint32_t>(newExtensions.size());
         VkResult result = vkCreateDevice(physicalDevice, &newCreateInfo, pAllocator, pDevice);
+#if UNITY_ANDROID
+        if (result != VK_SUCCESS && s_ahbVulkanFeaturesEnabled)
+        {
+            // A driver may advertise the required capabilities but reject their
+            // combination. Retry Unity's normal configuration without AHB.
+            s_ahbVulkanFeaturesEnabled = false;
+            RTC_LOG(LS_WARNING) << "AHB Vulkan device creation failed; retrying without AHB: " << result;
+            newExtensions = MergeExtensionNames(pCreateInfo->ppEnabledExtensionNames,
+                pCreateInfo->enabledExtensionCount, requestedDeviceExtensions);
+            newCreateInfo = *pCreateInfo;
+            newCreateInfo.ppEnabledExtensionNames = newExtensions.data();
+            newCreateInfo.enabledExtensionCount = static_cast<uint32_t>(newExtensions.size());
+            result = vkCreateDevice(physicalDevice, &newCreateInfo, pAllocator, pDevice);
+        }
+#endif
         if (result != VK_SUCCESS)
         {
             s_ahbVulkanFeaturesEnabled = false;

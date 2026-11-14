@@ -50,8 +50,12 @@ namespace webrtc
             *outReader = nullptr;
             *outWindow = nullptr;
             AImageReader* reader = nullptr;
-            media_status_t st = AImageReader_newWithUsage(
-                width, height, AIMAGE_FORMAT_PRIVATE, AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE, kReaderImages, &reader);
+            media_status_t st;
+            if (__builtin_available(android 26, *))
+                st = AImageReader_newWithUsage(
+                    width, height, AIMAGE_FORMAT_PRIVATE, AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE, kReaderImages, &reader);
+            else
+                return false;
             if (st != AMEDIA_OK || !reader)
             {
                 AHB_LOG("AImageReader_newWithUsage(%dx%d) failed (%d)", width, height, static_cast<int>(st));
@@ -255,7 +259,12 @@ namespace webrtc
         if (AImageReader_acquireLatestImage(m_reader, &img) != AMEDIA_OK || !img)
             return nullptr;
         AHardwareBuffer* ahb = nullptr;
-        if (AImage_getHardwareBuffer(img, &ahb) != AMEDIA_OK || !ahb)
+        media_status_t status;
+        if (__builtin_available(android 26, *))
+            status = AImage_getHardwareBuffer(img, &ahb);
+        else
+            status = AMEDIA_ERROR_UNSUPPORTED;
+        if (status != AMEDIA_OK || !ahb)
         {
             AImage_delete(img);
             return nullptr;

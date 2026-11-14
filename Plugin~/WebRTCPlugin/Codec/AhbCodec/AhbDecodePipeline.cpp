@@ -49,6 +49,11 @@ namespace webrtc
     bool AhbVkImporter::Init(VkDevice device)
     {
         m_device = device;
+        if (!vkBindImageMemory2)
+        {
+            AHB_LOG("vkBindImageMemory2 unavailable; AHB disabled");
+            return false;
+        }
         m_getAhbProps =
             reinterpret_cast<void*>(vkGetDeviceProcAddr(device, "vkGetAndroidHardwareBufferPropertiesANDROID"));
         if (!m_getAhbProps)
