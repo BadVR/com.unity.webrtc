@@ -1,0 +1,5 @@
+{
+  "name": "Unity.WebRTC.RuntimeTests",
+  "references": ["Unity.WebRTC"],
+  "autoReferenced": true
+}
