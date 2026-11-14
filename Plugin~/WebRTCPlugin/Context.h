@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <mutex>
 
 #include "AudioTrackSinkAdapter.h"
@@ -182,6 +183,9 @@ namespace webrtc
         std::map<const PeerConnectionObject*, std::unique_ptr<PeerConnectionObject>> m_mapClients;
         std::map<const webrtc::MediaStreamInterface*, std::unique_ptr<MediaStreamObserver>> m_mapMediaStreamObserver;
         std::map<const DataChannelInterface*, std::unique_ptr<DataChannelObject>> m_mapDataChannels;
+        // Lookup returns an owning copy for render events. Keep map mutation
+        // independent of the general render mutex and release outside this lock.
+        std::mutex m_mutexVideoRenderer;
         std::map<const uint32_t, std::shared_ptr<UnityVideoRenderer>> m_mapVideoRenderer;
         std::map<const AudioTrackSinkAdapter*, std::unique_ptr<AudioTrackSinkAdapter>> m_mapAudioTrackAndSink;
         // Render events hold mutex and pin references through GetRefPtr. A separate
@@ -189,7 +193,7 @@ namespace webrtc
         mutable std::mutex m_mutexRefPtr;
         std::map<const rtc::RefCountInterface*, rtc::scoped_refptr<rtc::RefCountInterface>> m_mapRefPtr;
 
-        static uint32_t s_rendererId;
+        static std::atomic<uint32_t> s_rendererId;
         static uint32_t GenerateRendererId();
     };
 

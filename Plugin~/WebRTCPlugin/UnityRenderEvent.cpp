@@ -9,6 +9,13 @@
 #include "UnityProfilerInterfaceFunctions.h"
 #include "UnityVideoTrackSource.h"
 #include "VideoFrame.h"
+#if UNITY_ANDROID
+#include <cstdlib>
+#include <sys/system_properties.h>
+#include "Codec/AhbCodec/AhbDisplayBuffer.h"
+#include "Codec/AhbCodec/AhbVulkanContext.h"
+#include "ReceivePathTelemetry.h"
+#endif
 
 #if defined(SUPPORT_VULKAN)
 #include "GraphicsDevice/Vulkan/UnityVulkanInitCallback.h"
@@ -37,6 +44,15 @@ namespace webrtc
     static std::unique_ptr<IGraphicsDevice> s_gfxDevice;
     static std::unique_ptr<GpuMemoryBufferPool> s_bufferPool;
     static int s_batchUpdateEventID = 0;
+#if UNITY_ANDROID
+    static UnityVulkanInstance s_vulkanInstance {};
+    static std::atomic<bool> s_haveVulkanInstance { false };
+    static std::unique_ptr<UnityGraphicsVulkan> s_unityVulkan;
+    const UnityVulkanInstance* GetUnityVulkanInstance()
+    {
+        return s_haveVulkanInstance ? &s_vulkanInstance : nullptr;
+    }
+#endif
 
     IGraphicsDevice* Plugin::GraphicsDevice() { return s_gfxDevice.get(); }
 
@@ -108,6 +124,13 @@ static void UNITY_INTERFACE_API OnGraphicsDeviceEvent(UnityGfxDeviceEventType ev
                 kUnityVulkanEventConfigFlag_ModifiesCommandBuffersState;
 
             vulkan->ConfigureEvent(s_batchUpdateEventID, &batchUpdateEventConfig);
+#if UNITY_ANDROID
+            s_vulkanInstance = instance;
+            s_haveVulkanInstance = AhbVulkanFeaturesEnabled();
+            s_unityVulkan = std::move(vulkan);
+            if (s_haveVulkanInstance)
+                AhbInitializeForDevice();
+#endif
         }
 #endif
         s_gfxDevice.reset(GraphicsDevice::GetInstance().Init(s_UnityInterfaces, s_ProfilerMarkerFactory.get()));
@@ -120,6 +143,11 @@ static void UNITY_INTERFACE_API OnGraphicsDeviceEvent(UnityGfxDeviceEventType ev
     }
     case kUnityGfxDeviceEventShutdown:
     {
+#if UNITY_ANDROID
+        AhbShutdownForDevice();
+        s_haveVulkanInstance = false;
+        s_unityVulkan.reset();
+#endif
         // Release buffers before graphics device because buffers depends on the device.
         s_bufferPool = nullptr;
 
@@ -252,6 +280,14 @@ static void UNITY_INTERFACE_API OnBatchUpdateEvent(int eventID, void* data)
 {
     if (eventID != s_batchUpdateEventID)
         return;
+#if UNITY_ANDROID && defined(SUPPORT_VULKAN)
+    if (s_unityVulkan)
+    {
+        UnityVulkanRecordingState retirementState {};
+        if (s_unityVulkan->CommandRecordingState(&retirementState, kUnityVulkanGraphicsQueueAccess_DontCare))
+            AhbRetireCompleted(retirementState.safeFrameNumber);
+    }
+#endif
     if (!s_context)
         return;
     if (!ContextManager::GetInstance()->Exists(s_context))
@@ -321,14 +357,34 @@ static void UNITY_INTERFACE_API OnBatchUpdateEvent(int eventID, void* data)
                 source->OnFrameCaptured(std::move(frame));
             }
         }
-#if 0
+#if UNITY_ANDROID && defined(SUPPORT_VULKAN)
         else if (trackData->action == VideoStreamTrackAction::Decode)
         {
-            std::unique_ptr<const ScopedProfiler> profiler;
-            if (s_ProfilerMarkerFactory)
-                profiler = s_ProfilerMarkerFactory->CreateScopedProfiler(*s_MarkerDecodeCopy);
-            UnityVideoRenderer* renderer = static_cast<UnityVideoRenderer*>(trackData->source);
-            renderer->CopyBuffer(trackData->texture, trackData->width, trackData->height, trackData->format);
+            // Decode submissions carry a renderer ID, not a potentially stale raw pointer.
+            const auto id = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(trackData->source));
+            auto renderer = s_context->GetVideoRenderer(id);
+            if (!renderer || !s_unityVulkan)
+                continue;
+            auto buffer = renderer->GetFrameBuffer();
+            const uint64_t decoderId = AhbDisplayBuffer::TryGetDecoderId(buffer.get());
+            if (!decoderId)
+                continue;
+
+            s_unityVulkan->EnsureOutsideRenderPass();
+            VkImageSubresource subresource { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0 };
+            UnityVulkanImage destination {};
+            if (!s_unityVulkan->AccessTexture(trackData->texture, &subresource, VK_IMAGE_LAYOUT_GENERAL,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                    kUnityVulkanResourceAccess_PipelineBarrier, &destination))
+                continue;
+            UnityVulkanRecordingState recording {};
+            if (!s_unityVulkan->CommandRecordingState(&recording, kUnityVulkanGraphicsQueueAccess_DontCare))
+                continue;
+            AhbConvertDecoderInto(decoderId, recording.commandBuffer, destination.image,
+                recording.currentFrameNumber, recording.safeFrameNumber);
+            s_unityVulkan->AccessTexture(trackData->texture, &subresource, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+                kUnityVulkanResourceAccess_PipelineBarrier, &destination);
         }
 #endif
     }
@@ -376,6 +432,10 @@ static void UNITY_INTERFACE_API TextureUpdateCallback(int eventID, void* data)
 
             params->texData = renderer->ConvertVideoFrameToTextureAndWriteToBuffer(
                 width, height, ConvertTextureFormat(params->format));
+#if UNITY_ANDROID
+            if (params->texData)
+                RecordReceivePath(ReceivePathCounter::CpuUploads);
+#endif
 
             if (params->texData == nullptr)
             {
@@ -400,3 +460,21 @@ extern "C" UnityRenderingEventAndData UNITY_INTERFACE_EXPORT UNITY_INTERFACE_API
     s_context = context;
     return TextureUpdateCallback;
 }
+
+#if UNITY_ANDROID
+extern "C" int UNITY_INTERFACE_EXPORT UNITY_INTERFACE_API GetAhbDisplayMode()
+{
+    if (!s_haveVulkanInstance)
+        return 0;
+    char value[PROP_VALUE_MAX] {};
+    return __system_property_get("debug.ahb.mode", value) > 0 ? std::atoi(value) : 0;
+}
+extern "C" uint64_t UNITY_INTERFACE_EXPORT UNITY_INTERFACE_API GetReceivePathCounter(int index)
+{
+    return ReadReceivePath(index);
+}
+extern "C" void UNITY_INTERFACE_EXPORT UNITY_INTERFACE_API ResetReceivePathCounters()
+{
+    ResetReceivePath();
+}
+#endif

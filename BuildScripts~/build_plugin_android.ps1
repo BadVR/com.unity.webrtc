@@ -8,6 +8,8 @@ param(
     [string]$NinjaPath = 'ninja',
     [string]$ArtifactDirectory,
     [string]$OutputDirectory,
+    [ValidateRange(24, 35)]
+    [int]$AndroidApi = 24,
     [ValidateRange(1, 256)]
     [int]$Jobs = 4
 )
@@ -88,8 +90,8 @@ foreach ($abi in $abis) {
         '-S', (Join-Path $repoRoot 'Plugin~'), '-B', $buildDirectory, '-G', 'Ninja',
         "-DCMAKE_MAKE_PROGRAM=$NinjaPath",
         "-DCMAKE_TOOLCHAIN_FILE=$AndroidNdk/build/cmake/android.toolchain.cmake",
-        "-DANDROID_NDK=$AndroidNdk", "-DANDROID_ABI=$abi", '-DANDROID_PLATFORM=android-24',
-        '-DANDROID_STL=c++_static', '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON',
+        "-DANDROID_NDK=$AndroidNdk", "-DANDROID_ABI=$abi", "-DANDROID_PLATFORM=android-$AndroidApi",
+        '-DANDROID_STL=c++_static', '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON', '-DANDROID_WEAK_API_DEFS=ON',
         '-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384',
         "-DCMAKE_BUILD_TYPE=$configuration", '-DBUILD_TESTING=OFF',
         "-DWEBRTC_DIR=$dependencyDirectory", "-DWEBRTC_PLUGIN_OUTPUT_DIR=$pluginDirectory"

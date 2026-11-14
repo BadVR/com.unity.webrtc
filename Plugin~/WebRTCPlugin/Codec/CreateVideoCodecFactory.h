@@ -13,6 +13,7 @@ namespace webrtc
     constexpr char kInternalImpl[] = "Internal";
     constexpr char kNvCodecImpl[] = "NvCodec";
     constexpr char kAndroidMediaCodecImpl[] = "MediaCodec";
+    constexpr char kAhbH264Impl[] = "AhbH264";
     constexpr char kVideoToolboxImpl[] = "VideoToolbox";
 
     constexpr char kSdpKeyNameCodecImpl[] = "implementation_name";

@@ -13,6 +13,7 @@ namespace webrtc
 #define GLOBAL_VULKAN_FUNCTION(func) PFN_##func func;
 #define INSTANCE_VULKAN_FUNCTION(func) PFN_##func func;
 #define DEVICE_VULKAN_FUNCTION(func) PFN_##func func;
+#define OPTIONAL_DEVICE_VULKAN_FUNCTION(func) PFN_##func func;
 
 #include "ListOfVulkanFunctions.inl"
 
@@ -105,6 +106,7 @@ namespace webrtc
 
     bool LoadDeviceVulkanFunction(VkDevice device)
     {
+#define OPTIONAL_DEVICE_VULKAN_FUNCTION(name) name = (PFN_##name)vkGetDeviceProcAddr(device, #name);
 #define DEVICE_VULKAN_FUNCTION(name)                                                                                   \
     name = (PFN_##name)vkGetDeviceProcAddr(device, #name);                                                             \
     if (name == nullptr)                                                                                               \
@@ -112,6 +114,8 @@ namespace webrtc
         return false;                                                                                                  \
     }
 #include "ListOfVulkanFunctions.inl"
+        if (!vkBindImageMemory2)
+            vkBindImageMemory2 = (PFN_vkBindImageMemory2)vkGetDeviceProcAddr(device, "vkBindImageMemory2KHR");
         return true;
     }
 #pragma clang diagnostic pop

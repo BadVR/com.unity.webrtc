@@ -7,6 +7,7 @@ namespace unity
 {
 namespace webrtc
 {
+    bool AhbVulkanFeaturesEnabled();
 
     // Preserve Unity's names and append requested names that are not already present by string value.
     std::vector<const char*>

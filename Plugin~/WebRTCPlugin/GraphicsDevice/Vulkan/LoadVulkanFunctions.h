@@ -19,6 +19,7 @@ namespace webrtc
 #define GLOBAL_VULKAN_FUNCTION(func) extern PFN_##func func;
 #define INSTANCE_VULKAN_FUNCTION(func) extern PFN_##func func;
 #define DEVICE_VULKAN_FUNCTION(func) extern PFN_##func func;
+#define OPTIONAL_DEVICE_VULKAN_FUNCTION(func) extern PFN_##func func;
 
 #include "ListOfVulkanFunctions.inl"
 

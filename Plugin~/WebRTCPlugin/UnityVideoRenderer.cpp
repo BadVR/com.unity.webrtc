@@ -4,6 +4,12 @@
 
 #include "UnityVideoRenderer.h"
 
+#if UNITY_ANDROID
+#include "Codec/AhbCodec/AhbDisplayBuffer.h"
+#include "Codec/AhbCodec/AhbVulkanContext.h"
+#include "ReceivePathTelemetry.h"
+#endif
+
 namespace unity
 {
 namespace webrtc
@@ -30,9 +36,16 @@ namespace webrtc
     void UnityVideoRenderer::OnFrame(const webrtc::VideoFrame& frame)
     {
         rtc::scoped_refptr<webrtc::VideoFrameBuffer> frame_buffer = frame.video_frame_buffer();
+        if (!frame_buffer)
+            return;
 
         if (frame_buffer->type() == webrtc::VideoFrameBuffer::Type::kNative)
         {
+#if UNITY_ANDROID
+            // Stock/delegate Android decoders may also emit kNative. Only a
+            // registered AHB display buffer can bypass the normal I420 conversion.
+            if (AhbDisplayBuffer::TryGetDecoderId(frame_buffer.get()) == 0)
+#endif
             frame_buffer = frame_buffer->ToI420();
         }
         SetFrameBuffer(frame_buffer, frame.timestamp_us());
@@ -69,8 +82,18 @@ namespace webrtc
             return;
         }
 
+        bool isAhbFrame = false;
+#if UNITY_ANDROID
+        uint64_t decoderId = AhbDisplayBuffer::TryGetDecoderId(buffer.get());
+        isAhbFrame = decoderId != 0;
+        uint64_t previousDecoder = m_lastMappedDecoder.exchange(decoderId, std::memory_order_acq_rel);
+        if (isAhbFrame && previousDecoder != decoderId)
+            AhbMapRenderer(m_id, decoderId);
+#endif
+        bool displayPathChanged = m_lastFrameNative.exchange(isAhbFrame, std::memory_order_acq_rel) != isAhbFrame;
+
         if (m_frameBuffer == nullptr || m_frameBuffer->width() != buffer->width() ||
-            m_frameBuffer->height() != buffer->height())
+            m_frameBuffer->height() != buffer->height() || displayPathChanged)
         {
             m_callback(this, buffer->width(), buffer->height());
         }
@@ -104,6 +127,9 @@ namespace webrtc
         if (m_needFlipVertical)
             height = -height;
 
+#if UNITY_ANDROID
+        RecordReceivePath(ReceivePathCounter::CpuConversions);
+#endif
         int result = libyuv::ConvertFromI420(
             i420_buffer->DataY(),
             i420_buffer->StrideY(),

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <mutex>
 
 #include <api/video/video_frame.h>
@@ -26,6 +27,12 @@ namespace webrtc
         rtc::scoped_refptr<VideoFrameBuffer> GetFrameBuffer();
         void SetFrameBuffer(rtc::scoped_refptr<VideoFrameBuffer> buffer, int64_t timestamp);
 
+        // True only for the registered AHB display buffer, not arbitrary kNative buffers.
+        bool LastFrameWasNative() const { return m_lastFrameNative.load(std::memory_order_acquire); }
+#if UNITY_ANDROID
+        uint64_t LastAhbDecoderId() const { return m_lastMappedDecoder.load(std::memory_order_acquire); }
+#endif
+
         // used in UnityRenderingExtEventUpdateTexture
         // called on RenderThread
         // Returns nullptr when Unity should retain the texture without another upload.
@@ -40,6 +47,10 @@ namespace webrtc
         std::atomic<int64_t> m_timestamp;
         DelegateVideoFrameResize m_callback;
         bool m_needFlipVertical;
+        std::atomic<bool> m_lastFrameNative{ false };
+#if UNITY_ANDROID
+        std::atomic<uint64_t> m_lastMappedDecoder{ 0 };
+#endif
     };
 
 } // end namespace webrtc

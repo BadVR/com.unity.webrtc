@@ -87,6 +87,10 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 target_compile_definitions(WebRTCLib PUBLIC $<$<CONFIG:Debug>:DEBUG>)
+option(AHB_TEST_HOOKS "Enable AHB failure injection for device tests only" OFF)
+if(Android AND AHB_TEST_HOOKS)
+  target_compile_definitions(WebRTCLib PRIVATE AHB_TEST_HOOKS=1)
+endif()
 
 set_target_properties(WebRTCLib PROPERTIES CXX_VISIBILITY_PRESET hidden
                                            VISIBILITY_INLINES_HIDDEN ON)
@@ -219,7 +223,7 @@ elseif(Android)
   target_compile_definitions(WebRTCLib PUBLIC WEBRTC_ANDROID WEBRTC_POSIX
                                               VK_NO_PROTOTYPES)
   target_link_libraries(WebRTCLib PRIVATE ${WEBRTC_LIBRARY} log OpenSLES GLESv3
-                                          EGL)
+                                          EGL mediandk android)
   target_compile_options(WebRTCLib PUBLIC -fno-lto -fno-rtti -fPIC)
 
   # Linker excludes unused symbols from the shared library when linking the

@@ -137,6 +137,11 @@ namespace Unity.WebRTC
         public bool Decoding => m_renderer != null;
 
         /// <summary>
+        ///     Native renderer identifier for this receive track, or zero when no renderer is active.
+        /// </summary>
+        public uint RendererId => m_renderer != null ? m_renderer.id : 0;
+
+        /// <summary>
         ///     Indicates that the track is configured to encode and send a video stream to a remote peer.
         /// </summary>
         public bool Encoding => m_source != null;
@@ -189,7 +194,13 @@ namespace Unity.WebRTC
                 }
                 else if (Decoding == true && m_renderer?.customTextureUpload == true)
                 {
+#if UNITY_ANDROID && !UNITY_EDITOR
+                    // Android AHB decode resolves this opaque renderer ID through
+                    // the native context map, retaining ownership during GPU submission.
+                    m_data.ptrSource = new IntPtr(unchecked((int)m_renderer.id));
+#else
                     m_data.ptrSource = (IntPtr)m_renderer?.self;
+#endif
                     m_data.action = VideoStreamTrackAction.Decode;
                 }
                 m_data.width = texture.width;
@@ -412,7 +423,7 @@ namespace Unity.WebRTC
         internal IntPtr self;
         private VideoStreamTrack track;
 
-        internal uint id => NativeMethods.GetVideoRendererId(self);
+        internal uint id => self != IntPtr.Zero ? NativeMethods.GetVideoRendererId(self) : 0;
         private bool disposed;
 
         public Texture Texture { get; private set; }
@@ -469,9 +480,32 @@ namespace Unity.WebRTC
 
         private void OnVideoFrameResizeInternal(int width, int height)
         {
+            if (disposed || self == IntPtr.Zero)
+                return;
+
+            bool useAhbDisplay = false;
+#if UNITY_ANDROID && !UNITY_EDITOR
+            // Only AHB-backed decoders use the Vulkan compute display. Software
+            // decoders (including VP8) retain the normal Texture2D upload path.
+            if (SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.Vulkan)
+            {
+                try
+                {
+                    useAhbDisplay = NativeMethods.GetAhbDisplayMode() >= 2 &&
+                        NativeMethods.GetRendererFrameIsNative(self) == 1;
+                }
+                catch (EntryPointNotFoundException)
+                {
+                    // Older bundled plugins do not expose the experimental AHB API.
+                    useAhbDisplay = false;
+                }
+            }
+#endif
+
             if (Texture != null &&
                 Texture.width == width &&
-                Texture.height == height)
+                Texture.height == height &&
+                customTextureUpload == useAhbDisplay)
             {
                 return;
             }
@@ -483,8 +517,28 @@ namespace Unity.WebRTC
                 TexturePtr = IntPtr.Zero;
             }
 
-            var format = WebRTC.GetSupportedGraphicsFormat(SystemInfo.graphicsDeviceType);
-            Texture = new Texture2D(width, height, format, TextureCreationFlags.None);
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (useAhbDisplay)
+            {
+                // The native compute pass writes directly into this storage image.
+                // Its image-view format must match RGBA8, without BGRA/sRGB reinterpretation.
+                var receiveTexture = new RenderTexture(width, height, 0, GraphicsFormat.R8G8B8A8_UNorm);
+                receiveTexture.enableRandomWrite = true;
+                if (!receiveTexture.Create())
+                {
+                    UnityEngine.Object.Destroy(receiveTexture);
+                    throw new InvalidOperationException("Could not create the AHB receive storage texture.");
+                }
+                Texture = receiveTexture;
+                customTextureUpload = true;
+            }
+            else
+#endif
+            {
+                var format = WebRTC.GetSupportedGraphicsFormat(SystemInfo.graphicsDeviceType);
+                Texture = new Texture2D(width, height, format, TextureCreationFlags.None);
+                customTextureUpload = false;
+            }
             TexturePtr = Texture.GetNativeTexturePtr();
             track.OnVideoFrameResize(Texture);
         }

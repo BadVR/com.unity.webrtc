@@ -417,7 +417,12 @@ extern "C"
         return context->CreateVideoRenderer(callback, needFlipVertical);
     }
 
-    UNITY_INTERFACE_EXPORT uint32_t GetVideoRendererId(UnityVideoRenderer* sink) { return sink->GetId(); }
+    UNITY_INTERFACE_EXPORT uint32_t GetVideoRendererId(UnityVideoRenderer* sink) { return sink ? sink->GetId() : 0; }
+
+    UNITY_INTERFACE_EXPORT int GetRendererFrameIsNative(UnityVideoRenderer* sink)
+    {
+        return sink ? (sink->LastFrameWasNative() ? 1 : 0) : -1;
+    }
 
     UNITY_INTERFACE_EXPORT void DeleteVideoRenderer(Context* context, UnityVideoRenderer* sink)
     {
