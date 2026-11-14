@@ -203,7 +203,14 @@ namespace webrtc
             }
             m_mapMediaStreamObserver.clear();
             m_mapDataChannels.clear();
-            m_mapVideoRenderer.clear();
+            {
+                decltype(m_mapVideoRenderer) remainingRenderers;
+                {
+                    std::lock_guard<std::mutex> rendererLock(m_mutexVideoRenderer);
+                    remainingRenderers.swap(m_mapVideoRenderer);
+                }
+                // Destruction may wait for a renderer callback; do not hold the map lock.
+            }
 
             m_workerThread->Quit();
             m_workerThread.reset();
@@ -383,23 +390,51 @@ namespace webrtc
 
     void Context::DeletePeerConnection(PeerConnectionObject* obj) { m_mapClients.erase(obj); }
 
-    uint32_t Context::s_rendererId = 0;
-    uint32_t Context::GenerateRendererId() { return s_rendererId++; }
+    std::atomic<uint32_t> Context::s_rendererId{ 1 };
+    uint32_t Context::GenerateRendererId()
+    {
+        // Zero represents no renderer in managed code and in opaque decode submissions.
+        uint32_t id = s_rendererId.fetch_add(1, std::memory_order_relaxed);
+        while (id == 0)
+            id = s_rendererId.fetch_add(1, std::memory_order_relaxed);
+        return id;
+    }
 
     UnityVideoRenderer* Context::CreateVideoRenderer(DelegateVideoFrameResize callback, bool needFlipVertical)
     {
         auto rendererId = GenerateRendererId();
         auto renderer = std::make_shared<UnityVideoRenderer>(rendererId, callback, needFlipVertical);
-        m_mapVideoRenderer[rendererId] = renderer;
-        return m_mapVideoRenderer[rendererId].get();
+        {
+            std::lock_guard<std::mutex> rendererLock(m_mutexVideoRenderer);
+            m_mapVideoRenderer.emplace(rendererId, renderer);
+        }
+        return renderer.get();
     }
 
-    std::shared_ptr<UnityVideoRenderer> Context::GetVideoRenderer(uint32_t id) { return m_mapVideoRenderer[id]; }
+    std::shared_ptr<UnityVideoRenderer> Context::GetVideoRenderer(uint32_t id)
+    {
+        std::lock_guard<std::mutex> rendererLock(m_mutexVideoRenderer);
+        auto it = m_mapVideoRenderer.find(id);
+        return it == m_mapVideoRenderer.end() ? nullptr : it->second;
+    }
 
     void Context::DeleteVideoRenderer(UnityVideoRenderer* renderer)
     {
-        m_mapVideoRenderer.erase(renderer->GetId());
-        renderer = nullptr;
+        std::shared_ptr<UnityVideoRenderer> removed;
+        {
+            std::lock_guard<std::mutex> rendererLock(m_mutexVideoRenderer);
+            // Compare borrowed addresses rather than dereferencing a possibly stale caller pointer.
+            for (auto it = m_mapVideoRenderer.begin(); it != m_mapVideoRenderer.end(); ++it)
+            {
+                if (it->second.get() == renderer)
+                {
+                    removed = std::move(it->second);
+                    m_mapVideoRenderer.erase(it);
+                    break;
+                }
+            }
+        }
+        // The last reference may run callbacks. Release after unlocking the map.
     }
 
     void Context::GetRtpSenderCapabilities(cricket::MediaType kind, RtpCapabilities* capabilities) const

@@ -1,14 +1,23 @@
 #include "pch.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 
 #include "UnityVulkanInitCallback.h"
+#if UNITY_ANDROID
+#include <android/log.h>
+#endif
 
 namespace unity
 {
 namespace webrtc
 {
+    static std::atomic<bool> s_ahbVulkanFeaturesEnabled { false };
+    bool AhbVulkanFeaturesEnabled() { return s_ahbVulkanFeaturesEnabled; }
+#if UNITY_ANDROID
+    static VkInstance s_createdInstance = VK_NULL_HANDLE;
+#endif
     const std::vector<const char*> requestedInstanceExtensions = {
         VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
         VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME,
@@ -54,6 +63,65 @@ namespace webrtc
         std::vector<const char*> newExtensions = MergeExtensionNames(
             pCreateInfo->ppEnabledExtensionNames, pCreateInfo->enabledExtensionCount, requestedDeviceExtensions);
 
+#if UNITY_ANDROID
+        // Prototype capability gate: preserve normal Vulkan startup when AHB is unavailable.
+        const std::vector<const char*> ahbExtensions = {
+            "VK_ANDROID_external_memory_android_hardware_buffer", "VK_KHR_dedicated_allocation",
+            "VK_KHR_get_memory_requirements2", "VK_KHR_bind_memory2", "VK_EXT_queue_family_foreign",
+            "VK_KHR_maintenance1", "VK_KHR_sampler_ycbcr_conversion"
+        };
+        uint32_t extensionCount = 0;
+        bool supported = vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extensionCount, nullptr) == VK_SUCCESS;
+        std::vector<VkExtensionProperties> available(extensionCount);
+        if (supported)
+            supported = vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extensionCount, available.data()) == VK_SUCCESS;
+        for (const auto* name : ahbExtensions)
+            supported = supported && std::any_of(available.begin(), available.end(),
+                [name](const VkExtensionProperties& ext) { return std::strcmp(name, ext.extensionName) == 0; });
+
+        VkPhysicalDeviceSamplerYcbcrConversionFeatures queried {
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES, nullptr, VK_FALSE };
+        VkPhysicalDeviceFeatures2 features { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &queried, {} };
+        auto getFeatures = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(
+            vkGetInstanceProcAddr(s_createdInstance, "vkGetPhysicalDeviceFeatures2"));
+        if (!getFeatures)
+            getFeatures = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(
+                vkGetInstanceProcAddr(s_createdInstance, "vkGetPhysicalDeviceFeatures2KHR"));
+        if (getFeatures)
+            getFeatures(physicalDevice, &features);
+        supported = supported && queried.samplerYcbcrConversion;
+
+        // Do not add a duplicate feature structure or modify Unity's const pNext chain.
+        bool alreadySpecified = false;
+        bool alreadyEnabled = false;
+        for (auto* entry = static_cast<const VkBaseInStructure*>(pCreateInfo->pNext); entry; entry = entry->pNext)
+        {
+            if (entry->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES)
+            {
+                alreadySpecified = true;
+                alreadyEnabled = reinterpret_cast<const VkPhysicalDeviceSamplerYcbcrConversionFeatures*>(entry)->samplerYcbcrConversion;
+            }
+            if (entry->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES)
+            {
+                alreadySpecified = true;
+                alreadyEnabled = reinterpret_cast<const VkPhysicalDeviceVulkan11Features*>(entry)->samplerYcbcrConversion;
+            }
+        }
+        supported = supported && (!alreadySpecified || alreadyEnabled);
+        VkPhysicalDeviceSamplerYcbcrConversionFeatures requested {
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES,
+            const_cast<void*>(pCreateInfo->pNext), VK_TRUE };
+        if (supported)
+        {
+            newExtensions = MergeExtensionNames(newExtensions.data(), static_cast<uint32_t>(newExtensions.size()), ahbExtensions);
+            if (!alreadySpecified)
+                newCreateInfo.pNext = &requested;
+        }
+        s_ahbVulkanFeaturesEnabled = supported;
+        __android_log_print(ANDROID_LOG_INFO, "AhbH264", "Vulkan AHB capability=%d existingYCbCr=%d enabled=%d",
+            supported, alreadySpecified, alreadyEnabled);
+#endif
+
         RTC_LOG(LS_INFO) << "WebRTC plugin intercepts vkCreateDevice.";
 
         for (auto extension : newExtensions)
@@ -67,6 +135,7 @@ namespace webrtc
         VkResult result = vkCreateDevice(physicalDevice, &newCreateInfo, pAllocator, pDevice);
         if (result != VK_SUCCESS)
         {
+            s_ahbVulkanFeaturesEnabled = false;
             RTC_LOG(LS_ERROR) << "vkCreateDevice failed. error:" << result;
             return result;
         }
@@ -107,6 +176,9 @@ namespace webrtc
 
         if (!LoadInstanceVulkanFunction(*pInstance))
             return VK_ERROR_INITIALIZATION_FAILED;
+#if UNITY_ANDROID
+        s_createdInstance = *pInstance;
+#endif
         return result;
     }
 

@@ -76,7 +76,7 @@ namespace webrtc
         , factories_()
     {
         const std::vector<std::string> arrayImpl = {
-            kInternalImpl, kNvCodecImpl, kAndroidMediaCodecImpl, kVideoToolboxImpl
+            kAhbH264Impl, kInternalImpl, kNvCodecImpl, kAndroidMediaCodecImpl, kVideoToolboxImpl
         };
 
         for (auto impl : arrayImpl)
@@ -98,7 +98,11 @@ namespace webrtc
     UnityVideoDecoderFactory::CreateVideoDecoder(const webrtc::SdpVideoFormat& format)
     {
         VideoDecoderFactory* factory = FindCodecFactory(factories_, format);
+        if (!factory)
+            return nullptr;
         auto decoder = factory->CreateVideoDecoder(format);
+        if (!decoder)
+            return nullptr;
         if (!profiler_)
             return decoder;
 

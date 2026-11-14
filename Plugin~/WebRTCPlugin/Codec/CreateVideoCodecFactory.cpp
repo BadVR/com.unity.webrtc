@@ -20,6 +20,7 @@
 #elif UNITY_ANDROID
 #include "Android/AndroidCodecFactoryHelper.h"
 #include "Android/Jni.h"
+#include "Codec/AhbCodec/AhbH264DecoderFactory.h"
 #endif
 
 namespace unity
@@ -73,6 +74,13 @@ namespace webrtc
     VideoDecoderFactory*
     CreateVideoDecoderFactory(const std::string& impl, IGraphicsDevice* gfxDevice, ProfilerMarkerFactory* profiler)
     {
+        if (impl == kAhbH264Impl)
+        {
+#if UNITY_ANDROID
+            if (IsVMInitialized())
+                return CreateAhbH264DecoderFactory().release();
+#endif
+        }
         if (impl == kInternalImpl)
         {
             return new webrtc::InternalDecoderFactory();

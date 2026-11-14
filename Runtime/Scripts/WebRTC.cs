@@ -1713,6 +1713,14 @@ namespace Unity.WebRTC
         public static extern IntPtr GetBatchUpdateEventFunc(IntPtr context);
         [DllImport(WebRTC.Lib)]
         public static extern int GetBatchUpdateEventID();
+#if UNITY_ANDROID && !UNITY_EDITOR
+        // The rebuilt Android plugin exports these AHB receive-display queries.
+        // Modes >= 2 use Vulkan compute only for a renderer delivering native AHB frames.
+        [DllImport(WebRTC.Lib)]
+        public static extern int GetAhbDisplayMode();
+        [DllImport(WebRTC.Lib)]
+        public static extern int GetRendererFrameIsNative(IntPtr sink);
+#endif
         [DllImport(WebRTC.Lib)]
         public static extern IntPtr GetUpdateTextureFunc(IntPtr context);
         [DllImport(WebRTC.Lib)]
