@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using UnityEngine.InputSystem;
 
 namespace Unity.WebRTC.Samples
 {
@@ -21,13 +22,14 @@ namespace Unity.WebRTC.Samples
             }
         }
 
-        void Update()
-        {
-            if (Input.GetKeyDown(KeyCode.Escape))
-            {
-                BackButtonPressed();
-            }
-        }
+		void Update()
+		{
+			Keyboard keyboard = Keyboard.current;
+			if (keyboard != null && keyboard.escapeKey.wasPressedThisFrame)
+			{
+				BackButtonPressed();
+			}
+		}
 
         public void BackButtonPressed()
         {
